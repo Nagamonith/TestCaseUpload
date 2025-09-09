@@ -294,17 +294,19 @@
               <span *ngIf="field.mappedTo" class="mapped-badge">Mapped</span>
             </div>
             
-            <ng-container *ngIf="field.field === 'version'; else testTypeOrNormalField">
-              <select
-                class="field-select"
-                [ngModel]="versionMapping"
-                (ngModelChange)="onVersionMappingChange($event)"
-              >
-                <option value="">-- Select Version Column or Product Version --</option>
-                <option *ngFor="let col of sheetColumns()" [value]="col">Column: {{ col }}</option>
-                <option *ngFor="let v of productVersions" [value]="'__pv__' + v.version">Product Version: {{ v.version }}</option>
-              </select>
-            </ng-container>
+           <ng-container *ngIf="field.field === 'version'; else testTypeOrNormalField">
+  <select
+    class="field-select"
+    [ngModel]="versionMapping"
+    (ngModelChange)="onVersionMappingChange($event)"
+  >
+    <option value="">-- Select Version Column or Product Version --</option>
+    <option *ngFor="let col of sheetColumns()" [value]="col">Column: {{ col }}</option>
+    <option *ngFor="let v of productVersions" [value]="'__pv__' + v.version">
+      Product Version: {{ v.version }} {{ v.isActive ? '' : '(Inactive)' }}
+    </option>
+  </select>
+</ng-container>
             
             <ng-template #testTypeOrNormalField>
               <ng-container *ngIf="field.field === 'testType'; else normalField">

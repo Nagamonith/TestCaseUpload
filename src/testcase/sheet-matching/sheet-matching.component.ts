@@ -202,22 +202,28 @@ export class SheetMatchingComponent {
     });
   }
 
-  private loadProductVersions(productId: string): void {
-    this.testCaseService.getProductVersions(productId).subscribe({
-      next: (versions: ProductVersion[]) => {
-        this.productVersions = versions;
-        if (!this.versionMapping && versions.length > 0) {
-          this.versionMapping = '__pv__' + versions[0].version;
-          this.coreMappings.update((mappings: FieldMapping[]) =>
-            mappings.map((m: FieldMapping) => m.field === 'version' ? { ...m, mappedTo: this.versionMapping } : m)
-          );
-        }
-      },
-      error: (err) => {
-        console.error('Failed to load product versions:', err);
+private loadProductVersions(productId: string): void {
+  this.testCaseService.getProductVersions(productId).subscribe({
+    next: (versions: ProductVersion[]) => {
+      this.productVersions = versions;
+      if (versions.length > 0) {
+        // Set default version mapping to the first active version
+        const activeVersion = versions.find(v => v.isActive) || versions[0];
+        this.versionMapping = '__pv__' + activeVersion.version;
+        
+        this.coreMappings.update((mappings: FieldMapping[]) =>
+          mappings.map((m: FieldMapping) => 
+            m.field === 'version' ? { ...m, mappedTo: this.versionMapping } : m
+          )
+        );
       }
-    });
-  }
+    },
+    error: (err) => {
+      console.error('Failed to load product versions:', err);
+      this.snackBar.open('Failed to load product versions', 'Close', { duration: 3000 });
+    }
+  });
+}
 
   // Module Creation Methods
   openModuleForm(): void {
@@ -490,145 +496,112 @@ export class SheetMatchingComponent {
     }
   }
 
-  private async createTestCases(): Promise<ImportResult> {
-    const result: ImportResult = {
-      success: 0,
-      errors: 0,
-      errorMessages: []
-    };
+ private async createTestCases(): Promise<ImportResult> {
+  const result: ImportResult = {
+    success: 0,
+    errors: 0,
+    errorMessages: []
+  };
 
-    const moduleId = this.createdModuleId();
-    if (!moduleId) {
-      result.errorMessages.push('No module created');
-      console.error('[IMPORT] No module created');
-      return result;
-    }
-
-    // Get product versions for mapping
-    let product = this.currentProduct();
-    if ((!product || !product.id) && this.selectedExistingModule()) {
-      // Defensive: try to recover product from selected module
-      product = { id: this.selectedExistingModule()!.productId, name: '', description: '', isActive: true } as any;
-      this.currentProduct.set(product);
-    }
-    if (!product || !product.id) {
-      result.errorMessages.push('No product selected (product context missing)');
-      console.error('[IMPORT] No product selected (product context missing)');
-      return result;
-    }
-
-    const productVersions = await firstValueFrom(
-      this.testCaseService.getProductVersions(product.id).pipe(
-        catchError(() => {
-          result.errorMessages.push('Failed to load product versions');
-          console.error('[IMPORT] Failed to load product versions');
-          return of([] as ProductVersionResponse[]);
-        })
-      )
-    );
-
-    for (const [index, row] of this.sheetData().entries()) {
-      try {
-        // Handle version mapping
-        let productVersionId = '';
-        if (this.versionMapping.startsWith('__pv__')) {
-          const versionString = this.versionMapping.replace('__pv__', '');
-          const productVersion = productVersions.find(v => v.version === versionString);
-          if (!productVersion) {
-            console.error(`[IMPORT] Row ${index + 1}: Product version "${versionString}" not found`, productVersions);
-            throw new Error(`Product version "${versionString}" not found`);
-          }
-          productVersionId = productVersion.id;
-        } else if (this.versionMapping) {
-          const versionString = row[this.versionMapping] || 'Unversioned';
-          const productVersion = productVersions.find(v => v.version === versionString);
-          if (!productVersion) {
-            console.error(`[IMPORT] Row ${index + 1}: Version "${versionString}" not found`, productVersions);
-            throw new Error(`Version "${versionString}" not found`);
-          }
-          productVersionId = productVersion.id;
-        } else {
-          if (productVersions.length > 0) {
-            productVersionId = productVersions[0].id;
-          } else {
-            console.error(`[IMPORT] Row ${index + 1}: No product versions available`);
-            throw new Error('No product versions available');
-          }
-        }
-
-        // Build test case payload
-        const testCaseRequest: CreateTestCaseRequest = {
-          moduleId: moduleId,
-          productVersionId: productVersionId,
-          testCaseId: this.getRowValue(row, 'testCaseId') || this.generateTestCaseId(),
-          useCase: this.getRowValue(row, 'useCase') || '',
-          scenario: this.getRowValue(row, 'scenario') || '',
-          testType: 'Manual',
-          testTool: '',
-          steps: this.parseSteps(row),
-          result: this.getRowValue(row, 'result'),
-          actual: this.getRowValue(row, 'actual'),
-          remarks: this.getRowValue(row, 'remarks')
-        };
-
-        // Add custom attributes if mapped
-        if (this.moduleAttributes().length > 0) {
-          // Add custom attributes as a loose property for debug/testing
-          (testCaseRequest as any).attributes = {};
-          for (const attr of this.moduleAttributes()) {
-            const col = this.attributeMappings()[attr.key];
-            if (col && row[col]) {
-              (testCaseRequest as any).attributes[attr.key] = row[col];
-            }
-          }
-        }
-
-        // Log the payload for this row
-        console.debug(`[IMPORT] Row ${index + 1}: Payload to API`, JSON.stringify(testCaseRequest, null, 2));
-
-        // Send to API
-        let createdTestCase: any = null;
-        try {
-          createdTestCase = await firstValueFrom(
-            this.testCaseService.createTestCase(moduleId, testCaseRequest)
-          );
-        } catch (err: any) {
-          let errorMsg = 'Unknown error';
-          if (err) {
-            if (typeof err === 'string') errorMsg = err;
-            else if (typeof err.message === 'string') errorMsg = err.message;
-            if (err.error) {
-              errorMsg += ' | Backend: ' + (typeof err.error === 'string' ? err.error : JSON.stringify(err.error));
-            }
-          }
-          result.errors++;
-          result.errorMessages.push(`Row ${index + 1}: ${errorMsg}`);
-          console.error(`[IMPORT] Error creating test case at row ${index + 1}:`, err);
-          continue;
-        }
-        
-        // Add custom attributes if mapped
-        await this.addTestCaseAttributes(createdTestCase.id, row);
-        
-        result.success++;
-
-      } catch (error: any) {
-        result.errors++;
-        let errorMsg = 'Unknown error';
-        if (error) {
-          if (typeof error === 'string') errorMsg = error;
-          else if (typeof error.message === 'string') errorMsg = error.message;
-          if (error.error) {
-            errorMsg += ' | Backend: ' + (typeof error.error === 'string' ? error.error : JSON.stringify(error.error));
-          }
-        }
-        result.errorMessages.push(`Row ${index + 1}: ${errorMsg}`);
-        console.error(`[IMPORT] Error creating test case at row ${index + 1}:`, error);
-      }
-    }
-
+  const moduleId = this.createdModuleId();
+  if (!moduleId) {
+    result.errorMessages.push('No module created');
     return result;
   }
+
+  // Get product context
+  let product = this.currentProduct();
+  if ((!product || !product.id) && this.selectedExistingModule()) {
+    product = { id: this.selectedExistingModule()!.productId, name: '', description: '', isActive: true } as any;
+    this.currentProduct.set(product);
+  }
+  if (!product || !product.id) {
+    result.errorMessages.push('No product selected');
+    return result;
+  }
+
+  // Load product versions
+  const productVersions = await firstValueFrom(
+    this.testCaseService.getProductVersions(product.id).pipe(
+      catchError(() => {
+        result.errorMessages.push('Failed to load product versions');
+        return of([] as ProductVersion[]);
+      })
+    )
+  );
+
+  for (const [index, row] of this.sheetData().entries()) {
+    try {
+      // Handle version mapping - FIXED LOGIC
+      let productVersionId = '';
+      
+      if (this.versionMapping.startsWith('__pv__')) {
+        // Fixed version from dropdown
+        const versionString = this.versionMapping.replace('__pv__', '');
+        const productVersion = productVersions.find(v => v.version === versionString);
+        if (!productVersion) {
+          throw new Error(`Product version "${versionString}" not found`);
+        }
+        productVersionId = productVersion.id;
+      } else if (this.versionMapping) {
+        // Version from column mapping
+        const versionString = row[this.versionMapping]?.toString() || '';
+        if (versionString) {
+          const productVersion = productVersions.find(v => v.version === versionString);
+          if (!productVersion) {
+            throw new Error(`Version "${versionString}" not found in product versions`);
+          }
+          productVersionId = productVersion.id;
+        }
+      }
+      
+      // If no version mapped, use the first available version
+      if (!productVersionId && productVersions.length > 0) {
+        productVersionId = productVersions[0].id;
+      }
+
+      // Build test case payload with productVersionId
+      const testCaseRequest: CreateTestCaseRequest = {
+        moduleId: moduleId,
+        productVersionId: productVersionId, // This is the key fix
+        testCaseId: this.getRowValue(row, 'testCaseId') || this.generateTestCaseId(),
+        useCase: this.getRowValue(row, 'useCase') || '',
+        scenario: this.getRowValue(row, 'scenario') || '',
+        testType: 'Manual',
+        testTool: '',
+        steps: this.parseSteps(row),
+        result: this.getRowValue(row, 'result'),
+        actual: this.getRowValue(row, 'actual'),
+        remarks: this.getRowValue(row, 'remarks')
+      };
+
+      // Log for debugging
+      console.debug(`[IMPORT] Row ${index + 1}: ProductVersionId = ${productVersionId}`);
+
+      // Send to API
+      const createdTestCase = await firstValueFrom(
+        this.testCaseService.createTestCase(moduleId, testCaseRequest).pipe(
+          catchError(err => {
+            throw new Error(`API Error: ${err.message}`);
+          })
+        )
+      );
+      
+      // Add custom attributes
+      await this.addTestCaseAttributes(createdTestCase.id, row);
+      
+      result.success++;
+
+    } catch (error: any) {
+      result.errors++;
+      const errorMsg = error.message || 'Unknown error';
+      result.errorMessages.push(`Row ${index + 1}: ${errorMsg}`);
+      console.error(`Error at row ${index + 1}:`, error);
+    }
+  }
+
+  return result;
+}
 
   private async addTestCaseAttributes(testCaseId: string, row: any): Promise<void> {
     const moduleId = this.createdModuleId();
@@ -669,22 +642,20 @@ export class SheetMatchingComponent {
     }];
   }
 
-  public getRowValue(row: any, field: string): string {
-    if (field === 'testType') {
-      return 'Manual';
-    }
-    if (field === 'version') {
-      if (this.versionMapping.startsWith('__pv__')) {
-        return this.versionMapping.replace('__pv__', '');
-      } else if (this.versionMapping) {
-        return row[this.versionMapping]?.toString() || '';
-      }
-    }
-    
-    const mapping = this.coreMappings().find(m => m.field === field);
-    if (!mapping || !mapping.mappedTo) return '';
-    return row[mapping.mappedTo]?.toString() || '';
+ public getRowValue(row: any, field: string): string {
+  if (field === 'testType') {
+    return 'Manual';
   }
+  
+  // Don't handle version field here - it's handled in createTestCases
+  if (field === 'version') {
+    return ''; // Version is handled separately
+  }
+  
+  const mapping = this.coreMappings().find(m => m.field === field);
+  if (!mapping || !mapping.mappedTo) return '';
+  return row[mapping.mappedTo]?.toString() || '';
+}
 
   private generateModuleName(): string {
     return this.sheetName()
